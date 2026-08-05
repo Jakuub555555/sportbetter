@@ -891,6 +891,21 @@ const SPORTS = [
     statLabels: { metric1: "Průměr na 3 šipky", metric2: "Počet 180s", metric3: "Zavírání dablů %", metric4: "Nejvyšší checkout" },
     finalTipsConfig: ["3-Dart Průměr", "Počet 180s", "Zavírání dablů %", "Nejvyšší Checkout"],
     partsCount: 2, partsNames: ["1. fáze", "2. fáze"]
+  },
+  {
+    id: "baseball", emoji: "⚾",
+    badge: "⚾ AI Powered · v1.3 PRO · Profesionální",
+    title: "BASEBALLOVÝ<br>ANALYTIK",
+    sub: "Vložte data baseballových zápasů — AI provede hloubkovou analýzu (odpaly, home runy, chyby, ERA nadhazovačů).",
+    accent: "#ff3b3b", accent2: "#00d4ff",
+    placeholderA: "Analyzovaný tým/hráč: Yankees\nYankees vs Red Sox: 6 – 4 (1-0, 0-2, 2-0, 0-1, 1-0, 0-0, 1-1, 1-0, 0-0) - Výhra (06.06.26)\n...",
+    placeholderB: "Analyzovaný tým/hráč: Red Sox\nYankees vs Red Sox: 6 – 4 (1-0, 0-2, 2-0, 0-1, 1-0, 0-0, 1-1, 1-0, 0-0) - Prohra (06.06.26)\n...",
+    overUnderTarget: 8.5, overUnderLabel: "OVER/UNDER 8.5 bodů",
+    labelA: "⚾ TÝM A", labelB: "⚾ TÝM B",
+    step3Label: "◈ Hledání detailních baseballových statistik...",
+    statLabels: { metric1: "Odpaly (Hits)", metric2: "Home runy", metric3: "Chyby (Errors)", metric4: "ERA nadhazovače" },
+    finalTipsConfig: ["Odpaly (Hits)", "Home runy", "Chyby (Errors)", "ERA nadhazovače"],
+    partsCount: 9, partsNames: ["1. směna", "2. směna", "3. směna", "4. směna", "5. směna", "6. směna", "7. směna", "8. směna", "9. směna"]
   }
 ];
 
@@ -1407,7 +1422,7 @@ function renderResults(tA, tB, sA, sB, parsedPred) {
   const probA = parsedPred.probA;
   const probB = parsedPred.probB;
   const probD = parsedPred.probD;
-  const showDraw = sport.id !== "tennis" && sport.id !== "volleyball" && sport.id !== "esport" && sport.id !== "darts";
+  const showDraw = sport.id !== "tennis" && sport.id !== "volleyball" && sport.id !== "esport" && sport.id !== "darts" && sport.id !== "baseball";
 
   const harderSched = parseFloat(sA.schedDiff) >= parseFloat(sB.schedDiff) ? tA.name : tB.name;
 
@@ -1799,7 +1814,7 @@ async function startAnalysis() {
       throw new Error("Nepodařilo se správně parsovat zápasy. Zkontrolujte formát dat (např. 'TeamA vs TeamB: 2-1 - Výhra')");
     }
 
-    const showDraw = sport.id !== "tennis" && sport.id !== "volleyball" && sport.id !== "esport" && sport.id !== "darts";
+    const showDraw = sport.id !== "tennis" && sport.id !== "volleyball" && sport.id !== "esport" && sport.id !== "darts" && sport.id !== "baseball";
     const mathScoreA = sA.winPct * 0.4 + sA.resilience * 0.15 + sA.homeWinPct * 0.2 + (100 - sA.closeLossRate) * 0.05 + sA.blowoutRate * 0.2;
     const mathScoreB = sB.winPct * 0.4 + sB.resilience * 0.15 + sB.awayWinPct * 0.2 + (100 - sB.closeLossRate) * 0.05 + sB.blowoutRate * 0.2;
     const mathTotal = mathScoreA + mathScoreB + (showDraw ? 15 : 0);
