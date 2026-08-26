@@ -92,111 +92,113 @@
             }, 3000);
         }
 
-        function parseScore(s) {
-            if (!s) return null;
-            s = s.trim();
-            const penMatch = s.match(/^(\d+)\((\d+)\)$/);
-            if (penMatch) return { display: s, value: parseInt(penMatch[1]), isPen: true, pen: parseInt(penMatch[2]) };
-            if (/^\d+$/.test(s)) return { display: s, value: parseInt(s), isPen: false };
-            return null;
+        function cleanTeamName(name) {
+            if (!name) return '';
+            // Odstranění dvoupísmenných kódů zemí ze začátku tenistů (uk, it, jp, ca...)
+            name = name.replace(/^(uk|it|jp|ca|us|es|fr|de|cz|sk|at|ch|ru)/i, '');
+            // Odstranění zdvojených názvů týmů bez mezery (např. Real MadridReal Madrid -> Real Madrid)
+            const len = name.length;
+            if (len % 2 === 0) {
+                const half1 = name.substring(0, len / 2);
+                const half2 = name.substring(len / 2);
+                if (half1 === half2) return half1;
+            }
+            return name.trim();
         }
 
-        function isDateLine(s) { return /^\d{2}\.\d{2}\.\d{2}$/.test(s.trim()); }
-        function isResultLine(s) { return /^[WLDwld]$/.test(s.trim()); }
-
-        function splitBlocks(lines) {
-            const blocks = [];
-            let current = null;
-            for (const line of lines) {
-                if (isDateLine(line)) {
-                    if (current) blocks.push(current);
-                    current = [line];
-                } else if (current) {
-                    current.push(line);
-                }
+        function splitScore(scoreStr) {
+            scoreStr = scoreStr.trim();
+            // Pokud je skóre typu "12" nebo "03" -> 1:2 / 0:3
+            // Pokud je skóre basketbal "7772" -> 77:72
+            // Pokud je skóre baseball "111" -> 11:1 nebo 1:11
+            const len = scoreStr.length;
+            if (len === 2) {
+                return { s1: scoreStr[0], s2: scoreStr[1] };
+            } else if (len === 4) {
+                return { s1: scoreStr.substring(0, 2), s2: scoreStr.substring(2) };
+            } else if (len === 3) {
+                // Heuristika pro 3ciferné skóre (baseball 111, 610)
+                if (scoreStr.endsWith('10')) return { s1: scoreStr[0], s2: '10' };
+                if (scoreStr.startsWith('10')) return { s1: '10', s2: scoreStr[2] };
+                if (scoreStr.startsWith('11')) return { s1: '11', s2: scoreStr[2] };
+                return { s1: scoreStr.substring(0, 2), s2: scoreStr.substring(2) };
             }
-            if (current) blocks.push(current);
-            return blocks;
-        }
-
-        function parseBlock(block, mainTeam) {
-            if (block.length < 4) return null;
-            const date = block[0];
-            let resultIdx = -1;
-            for (let i = block.length - 1; i >= 1; i--) {
-                if (isResultLine(block[i])) { resultIdx = i; break; }
-            }
-            if (resultIdx === -1) return null;
-            let scoreIdx2 = -1, scoreIdx1 = -1;
-            for (let i = resultIdx - 1; i >= 1; i--) {
-                const s = parseScore(block[i]);
-                if (s !== null) {
-                    if (scoreIdx2 === -1) scoreIdx2 = i;
-                    else if (scoreIdx1 === -1) { scoreIdx1 = i; break; }
-                }
-            }
-            if (scoreIdx1 === -1 || scoreIdx2 === -1) return null;
-            const score1 = parseScore(block[scoreIdx1]);
-            const score2 = parseScore(block[scoreIdx2]);
-            const metaLines = block.slice(1, scoreIdx1);
-            const deduped = [];
-            for (let i = 0; i < metaLines.length; i++) {
-                if (i === 0 || metaLines[i] !== metaLines[i - 1]) deduped.push(metaLines[i]);
-            }
-            function looksLikeTeam(s) {
-                if (s.length <= 3) return false;
-                const skipList = ['world', 'J1', 'J2', 'J3', 'FO', 'DIV', 'PEN', 'Pen'];
-                if (skipList.some(k => k.toLowerCase() === s.toLowerCase())) return false;
-                return true;
-            }
-            const teamCandidates = deduped.filter(looksLikeTeam);
-            let team1 = '', team2 = '';
-            if (teamCandidates.length >= 2) { team1 = teamCandidates[0]; team2 = teamCandidates[1]; }
-            else if (teamCandidates.length === 1) { team1 = teamCandidates[0]; team2 = '?'; }
-            const resultRaw = block[resultIdx].trim().toUpperCase();
-            return { date, team1, team2, score1, score2, result: resultRaw };
+            return { s1: scoreStr, s2: '' };
         }
 
         function processMatches() {
             const raw = document.getElementById('input').value.trim();
             if (!raw) return;
-            const allLines = raw.split('\n').map(l => l.trim()).filter(l => l !== '');
+            const lines = raw.split('\n').map(l => l.trim()).filter(l => l !== '');
+
             let mainTeam = '';
-            let startIdx = 0;
-            if (allLines[0] && !isDateLine(allLines[0])) {
-                mainTeam = allLines[0].replace(/^Last matches:\s*/i, '').trim();
-                startIdx = 1;
+            let startIndex = 0;
+
+            if (lines[0] && lines[0].toLowerCase().startsWith('last matches:')) {
+                mainTeam = lines[0].replace(/^Last matches:\s*/i, '').trim();
+                startIndex = 1;
             }
-            const dataLines = allLines.slice(startIdx);
-            const blocks = splitBlocks(dataLines);
-            if (blocks.length === 0) {
+
+            const matches = [];
+            let i = startIndex;
+
+            while (i < lines.length) {
+                // Hledáme řádek začínající datem (DD.MM.YY)
+                const dateMatch = lines[i].match(/^(\d{2}\.\d{2}\.\d{2})/);
+                if (dateMatch) {
+                    const date = dateMatch[1];
+                    let team1 = '', team2 = '', score1 = '', score2 = '', result = '';
+                    
+                    // Zjištění následujících řádků bloku
+                    let j = i + 1;
+                    const blockLines = [];
+                    while (j < lines.length && !lines[j].match(/^(\d{2}\.\d{2}\.\d{2})/)) {
+                        blockLines.push(lines[j]);
+                        j++;
+                    }
+
+                    // V bloku hledáme výsledek (W/L/D) a skóre
+                    if (blockLines.length >= 3) {
+                        result = blockLines[blockLines.length - 1].toUpperCase();
+                        const rawScore = blockLines[blockLines.length - 2];
+                        const scores = splitScore(rawScore);
+                        score1 = scores.s1;
+                        score2 = scores.s2;
+
+                        team1 = cleanTeamName(blockLines[0]);
+                        team2 = cleanTeamName(blockLines[1]);
+
+                        matches.push({ date, team1, team2, score1, score2, result });
+                    }
+                    i = j;
+                } else {
+                    i++;
+                }
+            }
+
+            if (matches.length === 0) {
                 document.getElementById('output').innerHTML = '<p class="error-msg">Nebyla nalezena žádná data.</p>';
                 return;
             }
-            const matches = [];
-            for (const block of blocks) {
-                const m = parseBlock(block, mainTeam);
-                if (m) matches.push(m);
-            }
+
             let textLines = [];
             if (mainTeam) textLines.push(`Analyzovaný tým/hráč: ${mainTeam}`);
             textLines.push(`Celkový počet zápasů: ${matches.length}`);
             textLines.push('');
+
             const resultLabel = { W: 'Výhra', L: 'Prohra', D: 'Remíza' };
             const rowClass   = { W: 'win',   L: 'loss',   D: 'draw' };
-            let html = '';
-            if (mainTeam) {
-                html += `<div class="summary">Tým / Hráč: <span>${mainTeam}</span> &nbsp;·&nbsp; Zápasů: <span>${matches.length}</span></div>`;
-            } else {
-                html += `<div class="summary">Celkem zápasů: <span>${matches.length}</span></div>`;
-            }
+            
+            let html = mainTeam 
+                ? `<div class="summary">Tým / Hráč: <span>${mainTeam}</span> &nbsp;·&nbsp; Zápasů: <span>${matches.length}</span></div>`
+                : `<div class="summary">Celkem zápasů: <span>${matches.length}</span></div>`;
+
             for (const m of matches) {
-                const s1 = m.score1.display;
-                const s2 = m.score2.display;
-                const scoreStr = `${s1} – ${s2}`;
+                const scoreStr = m.score2 !== '' ? `${m.score1} – ${m.score2}` : m.score1;
                 const rc = rowClass[m.result] || 'draw';
                 const rl = resultLabel[m.result] || m.result;
                 const badge = `<span class="match-badge badge-${m.result}">${m.result}</span>`;
+                
                 html += `<div class="match-row ${rc}">
                     <span class="match-date">${m.date}</span>
                     <span class="match-teams">${m.team1} vs ${m.team2}</span>
@@ -206,6 +208,7 @@
                 </div>`;
                 textLines.push(`${m.team1} vs ${m.team2}: ${scoreStr} - ${rl} (${m.date})`);
             }
+
             lastOutputText = textLines.join('\n');
             document.getElementById('output').innerHTML = html;
         }
