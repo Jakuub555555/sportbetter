@@ -177,20 +177,194 @@
             return fallback;
         }
 
-        // Every block is exactly 5 lines: date+league, team1, team2, score, result
+        // Blocks come in different shapes depending on where the data was copied from:
+        //  - Firefox-style: date+league glued together, team names doubled+glued on one
+        //    line each ("SunderlandSunderland"), score glued on one line ("10"), then result.
+        //  - Brave-style: date and league on separate lines, each team name appears twice
+        //    as two separate identical lines, and the two score numbers are on separate
+        //    lines, then result.
+        // Rather than assuming a fixed line count, we walk the block field by field and
+        // figure out, at each step, how many lines that field consumed.
+
+        function isTeamNameStart(block, idx) {
+            // A field starting a team name is either a single "doubled" string
+            // (Firefox football/basketball), two consecutive identical lines
+            // (Brave football/basketball), a lowercase country-code glued
+            // directly to a capitalized name ("mcVacherot V." - Firefox tennis),
+            // or a lone lowercase country-code line followed by the name on the
+            // next line ("mc" / "Vacherot V." - Brave tennis).
+            if (idx >= block.length) return false;
+            const line = block[idx];
+            if (dedupeName(line) !== line) return true;
+            if (idx + 1 < block.length && line === block[idx + 1]) return true;
+            if (/^[a-z]{2}[A-Z].*$/.test(line)) return true;
+            if (/^[a-z]{2}$/.test(line) && idx + 1 < block.length) return true;
+            return false;
+        }
+
+        function readTeamName(block, idx) {
+            const line = block[idx];
+            const deduped = dedupeName(line);
+            if (deduped !== line) {
+                return { name: cleanTeamName(deduped), next: idx + 1 };
+            }
+            if (idx + 1 < block.length && block[idx] === block[idx + 1]) {
+                return { name: cleanTeamName(line), next: idx + 2 };
+            }
+            if (/^[a-z]{2}$/.test(line) && idx + 1 < block.length) {
+                return { name: cleanTeamName(block[idx + 1]), next: idx + 2 };
+            }
+            return { name: cleanTeamName(line), next: idx + 1 };
+        }
+
+        // Some sports (e.g. basketball halftime, hockey regulation-time-before-OT)
+        // report the final score PLUS a secondary number pair glued into one blob,
+        // e.g. "1081068686" = 108-106 final, 86-86 halftime, or "4333" = 4-3 final
+        // (decided in OT), 3-3 after regulation. We only want the first pair (the
+        // actual final score). We search for the split into 4 numbers that is most
+        // "balanced" and satisfies both the given result AND the sanity rule that
+        // the secondary pair can't exceed the final-score pair (you can't have
+        // scored more at halftime/regulation than you finished with).
+        function splitCombinedScoreQuad(raw, mainIsTeam1, result) {
+            raw = raw.trim();
+            if (!/^\d+$/.test(raw)) return null;
+            const n = raw.length;
+            if (n < 4) return null;
+
+            const candidates = [];
+            for (let p1 = 1; p1 < n - 2; p1++) {
+                for (let p2 = p1 + 1; p2 < n - 1; p2++) {
+                    for (let p3 = p2 + 1; p3 < n; p3++) {
+                        candidates.push([p1, p2, p3]);
+                    }
+                }
+            }
+
+            candidates.sort((A, B) => {
+                const cost = ([p1, p2, p3]) => {
+                    const la = p1, lb = p2 - p1, lc = p3 - p2, ld = n - p3;
+                    let c = Math.abs(la - lb) + Math.abs(lc - ld);
+                    if (la < lc) c += 5;
+                    if (lb < ld) c += 5;
+                    return c;
+                };
+                return cost(A) - cost(B);
+            });
+
+            for (const [p1, p2, p3] of candidates) {
+                const aStr = raw.slice(0, p1), bStr = raw.slice(p1, p2), cStr = raw.slice(p2, p3), dStr = raw.slice(p3);
+                if ([aStr, bStr, cStr, dStr].some(s => s.length > 1 && s[0] === '0')) continue;
+                const a = parseInt(aStr, 10), b = parseInt(bStr, 10), c = parseInt(cStr, 10), d = parseInt(dStr, 10);
+                // Secondary pair (halftime/regulation) can't exceed the final score.
+                if (c > a || d > b) continue;
+                const mainScore = mainIsTeam1 ? a : b;
+                const otherScore = mainIsTeam1 ? b : a;
+                let ok = false;
+                if (result === 'W') ok = mainScore > otherScore;
+                else if (result === 'L') ok = mainScore < otherScore;
+                else if (result === 'D') ok = mainScore === otherScore;
+                if (ok) return { s1: a, s2: b };
+            }
+            return null;
+        }
+
+        // Score field can carry a penalty-shootout result too, arriving in one of a
+        // few shapes:
+        //  - plain single token, e.g. "00" (no separator) or "0-3"
+        //  - two lines "1(4)" / "1(3)"           (regulation score with penalties in parens)
+        //  - four lines "1" / "(4)" / "1" / "(3)" (regulation and penalty score on own lines)
+        //  - a long single blob or 4 plain-number lines carrying a secondary stat
+        //    (e.g. basketball halftime score) after the real final score
+        function parseScoreFields(scoreLines, mainIsTeam1, result) {
+            if (scoreLines.length === 2) {
+                const re = /^(\d+)(?:\s*\((\d+)\))?$/;
+                const m1 = scoreLines[0].match(re);
+                const m2 = scoreLines[1].match(re);
+                if (m1 && m2) {
+                    const out = { s1: parseInt(m1[1], 10), s2: parseInt(m2[1], 10) };
+                    if (m1[2] !== undefined && m2[2] !== undefined) {
+                        out.pen1 = parseInt(m1[2], 10);
+                        out.pen2 = parseInt(m2[2], 10);
+                    }
+                    return out;
+                }
+            }
+            if (scoreLines.length === 4) {
+                const regRe = /^(\d+)$/;
+                const penRe = /^\((\d+)\)$/;
+                const r1 = scoreLines[0].match(regRe);
+                const p1 = scoreLines[1].match(penRe);
+                const r2 = scoreLines[2].match(regRe);
+                const p2 = scoreLines[3].match(penRe);
+                if (r1 && p1 && r2 && p2) {
+                    return { s1: parseInt(r1[1], 10), s2: parseInt(r2[1], 10), pen1: parseInt(p1[1], 10), pen2: parseInt(p2[1], 10) };
+                }
+                // Not a penalty shootout - likely a final score plus a secondary
+                // stat (e.g. basketball halftime) on 4 separate plain-number lines.
+                // The first two lines are the real final score.
+                if (scoreLines.every(s => /^\d+$/.test(s))) {
+                    return { s1: parseInt(scoreLines[0], 10), s2: parseInt(scoreLines[1], 10) };
+                }
+            }
+            if (scoreLines.length === 1) {
+                const raw = scoreLines[0].trim();
+                if (/^\d+$/.test(raw) && raw.length >= 4) {
+                    const quad = splitCombinedScoreQuad(raw, mainIsTeam1, result);
+                    if (quad) return quad;
+                }
+                return splitCombinedScore(raw, mainIsTeam1, result);
+            }
+            if (scoreLines.length > 0) {
+                const cleaned = scoreLines.map(s => s.replace(/[()]/g, '')).join('');
+                return splitCombinedScore(cleaned, mainIsTeam1, result);
+            }
+            return null;
+        }
+
+        // A block needs at least: date, team1, team2, score, result
         function parseBlock(block, mainTeam) {
-            if (block.length !== 5) return null;
+            if (block.length < 5) return null;
 
             const dateMatch = block[0].match(/^(\d{2}\.\d{2}\.\d{2})(.*)$/);
             if (!dateMatch) return null;
             const date = dateMatch[1];
-            const league = dateMatch[2].trim();
+            const leagueTail = dateMatch[2].trim();
 
-            const result = block[4].trim().toUpperCase();
+            let isPenalty = false;
+            let league = '';
+            if (leagueTail) {
+                const penMatch = leagueTail.match(/^pen(.*)$/i);
+                if (penMatch) {
+                    isPenalty = true;
+                    league = penMatch[1].trim();
+                } else {
+                    league = leagueTail;
+                }
+            }
+
+            // Gather any number of tag lines before the teams start (league code,
+            // "Pen" marker, etc. - these can arrive as separate lines or combined).
+            let idx = 1;
+            while (idx < block.length && !isTeamNameStart(block, idx)) {
+                const tag = block[idx].trim();
+                if (/^pen$/i.test(tag)) {
+                    isPenalty = true;
+                } else if (tag) {
+                    league = league ? `${league} ${tag}` : tag;
+                }
+                idx += 1;
+            }
+
+            const result = block[block.length - 1].trim().toUpperCase();
             if (!['W', 'L', 'D'].includes(result)) return null;
 
-            const team1 = cleanTeamName(block[1]);
-            const team2 = cleanTeamName(block[2]);
+            const t1 = readTeamName(block, idx);
+            const team1 = t1.name;
+            idx = t1.next;
+
+            const t2 = readTeamName(block, idx);
+            const team2 = t2.name;
+            idx = t2.next;
 
             const mt = (mainTeam || '').trim().toLowerCase();
             let mainIsTeam1 = true;
@@ -200,10 +374,17 @@
                 mainIsTeam1 = !(t2Match && !t1Match);
             }
 
-            const scores = splitCombinedScore(block[3], mainIsTeam1, result);
+            const scoreLines = block.slice(idx, block.length - 1);
+            const scores = parseScoreFields(scoreLines, mainIsTeam1, result);
             if (!scores) return null;
 
-            return { date, league, team1, team2, score1: scores.s1, score2: scores.s2, result };
+            return {
+                date, league, team1, team2,
+                score1: scores.s1, score2: scores.s2,
+                pen1: scores.pen1, pen2: scores.pen2,
+                isPenalty: isPenalty || scores.pen1 !== undefined,
+                result
+            };
         }
 
         function processMatches() {
@@ -253,18 +434,23 @@
             }
 
             for (const m of matches) {
-                const scoreStr = `${m.score1} – ${m.score2}`;
+                const hasPen = m.pen1 !== undefined && m.pen2 !== undefined;
+                const scoreStr = hasPen
+                    ? `${m.score1} (${m.pen1}) – ${m.score2} (${m.pen2})`
+                    : `${m.score1} – ${m.score2}`;
                 const rc = rowClass[m.result] || 'draw';
-                const rl = resultLabel[m.result] || m.result;
+                let rl = resultLabel[m.result] || m.result;
+                if (m.isPenalty) rl += ' na penalty';
+                const leagueLabel = m.league + (m.isPenalty ? (m.league ? ' · PEN' : 'PEN') : '');
                 const badge = `<span class="match-badge badge-${m.result}">${m.result}</span>`;
                 html += `<div class="match-row ${rc}">
-                    <span class="match-date">${m.date}${m.league ? `<span class="league">${m.league}</span>` : ''}</span>
+                    <span class="match-date">${m.date}${leagueLabel ? `<span class="league">${leagueLabel}</span>` : ''}</span>
                     <span class="match-teams">${m.team1} vs ${m.team2}</span>
                     <span class="match-score">${scoreStr}</span>
                     ${badge}
                     <span class="match-result-text">${rl}</span>
                 </div>`;
-                textLines.push(`${m.team1} vs ${m.team2}: ${scoreStr} - ${rl} (${m.date}${m.league ? ' ' + m.league : ''})`);
+                textLines.push(`${m.team1} vs ${m.team2}: ${scoreStr} - ${rl} (${m.date}${leagueLabel ? ' ' + leagueLabel : ''})`);
             }
 
             lastOutputText = textLines.join('\n');
